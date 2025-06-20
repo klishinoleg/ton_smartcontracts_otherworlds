@@ -1,5 +1,5 @@
-import {CompilerConfig} from '@ton/blueprint';
+import {CompilerConfig} from '@ton-community/blueprint';
 
 export const compile: CompilerConfig = {
-    targets: ['contract/jetton/materia-wallet.fc']
+    targets: ['contracts/jetton/materia-wallet.fc']
 };

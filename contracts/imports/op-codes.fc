@@ -1,9 +1,34 @@
-int op::transfer() asm "0xf8a7ea5 PUSHINT";
-int op::transfer_notification() asm "0x7362d09c PUSHINT";
-int op::internal_transfer() asm "0x178d4519 PUSHINT";
-int op::excesses() asm "0xd53276db PUSHINT";
-int op::burn() asm "0x595f07bc PUSHINT";
-int op::burn_notification() asm "0x7bdd97de PUSHINT";
+;; ─────────────────────────────────────────────
+;; Standard Jetton op codes (Jetton wallet standard)
+;; ─────────────────────────────────────────────
 
-;; Minter
-int op::mint() asm "21 PUSHINT";
+int op::transfer               () asm "0xf8a7ea5 PUSHINT"; ;; Standard token transfer
+int op::transfer_notification  () asm "0x7362d09c PUSHINT"; ;; Notification after transfer
+int op::internal_transfer      () asm "0x178d4519 PUSHINT"; ;; Internal wallet-to-wallet transfer
+int op::excesses               () asm "0xd53276db PUSHINT"; ;; Handle remaining funds
+int op::burn                   () asm "0x595f07bc PUSHINT"; ;; Burn tokens
+int op::burn_notification      () asm "0x7bdd97de PUSHINT"; ;; Notification after burn
+int op::change_admin           () asm "0x03 PUSHINT";
+
+;; ─────────────────────────────────────────────
+;; MateriaWallet custom op codes
+;; ─────────────────────────────────────────────
+
+int op::add_experience         () asm "0x7bdd98de PUSHINT"; ;; Add player experience (server-signed)
+int op::set_nickname           () asm "0x7bdd9ade PUSHINT"; ;; Set player nickname (reserved)
+
+;; ─────────────────────────────────────────────
+;; MateriaMinter op codes
+;; ─────────────────────────────────────────────
+
+int op::mint                   () asm "21 PUSHINT";          ;; Mint tokens (standard jetton)
+
+int op::update_pubkey          () asm "0x01 PUSHINT";        ;; Update server public key (owner only)
+int op::mint_from_game         () asm "0x02 PUSHINT";        ;; Mint MAT from signed game request
+int op::buy_mat                () asm "0x03 PUSHINT";        ;; Buy MAT for TON at +35% price
+int op::add_ton_to_bank        () asm "0x04 PUSHINT";        ;; Deposit TON to the ecosystem bank
+int op::materia_to_ton         () asm "0x05 PUSHINT";        ;; Exchange MAT to TON, burn MAT
+int op::get_mat_ton_price      () asm "0x06 PUSHINT";        ;; Get current MAT/TON price
+int op::get_bank_balance       () asm "0x07 PUSHINT";        ;; Get current TON balance in the bank
+int op::receive_experience     () asm "0x08 PUSHINT";        ;; Proxy for experience update
+int op::init_minter            () asm "0x09 PUSHINT";        ;; Initialize minter and issue initial MAT

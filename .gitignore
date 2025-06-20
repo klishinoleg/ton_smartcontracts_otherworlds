@@ -3,3 +3,7 @@
 /node_modules
 /tags
 /package-lock.json
+/constants/wallet.keys.json
+/help/
+/constants/key.pk
+/constants/key.pub

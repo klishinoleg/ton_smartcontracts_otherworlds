@@ -1,5 +1,5 @@
-import { sleep, NetworkProvider, UIProvider} from '@ton/blueprint';
-import { Address, beginCell, Builder, Cell, Dictionary, DictionaryValue, Slice } from "@ton/core";
+import { sleep, NetworkProvider, UIProvider} from '@ton-community/blueprint';
+import { Address, beginCell, Builder, Cell, Dictionary, DictionaryValue, Slice } from "ton-core";
 import { sha256 } from 'ton-crypto';
 
 export const defaultJettonKeys = ["uri", "name", "description", "image", "image_data", "symbol", "decimals", "amount_style"];
