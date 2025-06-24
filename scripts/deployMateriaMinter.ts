@@ -2,7 +2,6 @@ import {Cell, toNano, Address} from 'ton-core';
 import {
     MateriaMinter,
     jettonContentToCell,
-    jettonTxIdsToCell,
 } from '../wrappers/MateriaMinter';
 import {compile, NetworkProvider} from "@ton-community/blueprint";
 import {promptAddress, promptBool, promptUrl} from '../wrappers/ui-utils';
@@ -67,13 +66,12 @@ export async function run(provider: NetworkProvider): Promise<void | null> {
 
     // Prepare contract parameters
     const content: Cell = jettonContentToCell({type: 1, uri: contentUrl});
-    const txIds: Cell = jettonTxIdsToCell([]); // Initial empty list
     const wallet_code: Cell = await compile('MateriaWallet');
     const totalSuply: number = 0
     const pubkey: bigint = 0n
 
     const minter = MateriaMinter.createFromConfig(
-        {totalSuply, admin, pubkey, content, wallet_code, txIds},
+        {totalSuply, admin, pubkey, content, wallet_code},
         await compile('MateriaMinter')
     );
 

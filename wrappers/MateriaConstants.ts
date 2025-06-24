@@ -96,14 +96,16 @@ export class Errors {
     static balance_error = 706;
 
     // Minter-specific
-    static invalid_signature = 101;
-    static signature_expired = 102;
+    static invalid_signature = 100;
+    static signature_expired = 101;
+    static invalid_payload = 102;
     static tx_id_already_used = 103;
-    static wallet_creation_failed = 104;
-    static amount_too_low = 105;
-    static zero_ton_transfer = 106;
-    static too_little_bank_reserve = 107;
-    static access_denied = 108;
-    static exchange_too_small = 109;
-    static invalid_payload = 110;
+    static amount_too_low = 104;
+    static wallet_creation_failed = 105;
+    static invalid_sender = 106;
+    static access_denied = 107;
+    static zero_ton_transfer = 108;
+    static exchange_too_small = 110;
+    static creator_not_set = 111;
+    static internal_error = 112;
 }

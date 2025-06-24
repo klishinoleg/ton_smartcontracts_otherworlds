@@ -4,7 +4,6 @@ import {
     fwd_fee,
     gas_consumption, INIT_MAT_FOR_TON,
     jettonContentToCell,
-    jettonTxIdsToCell,
     MateriaMinter, min_tons_for_storage, PRICE_MULTIPLIER, TAX_VALUE
 } from "../wrappers/MateriaMinter";
 import {Address, beginCell, Cell, fromNano, toNano} from "ton-core";
@@ -14,16 +13,7 @@ import {Errors, Op} from "../wrappers/MateriaConstants";
 import {randomAddress} from "@ton-community/test-utils";
 import {SERVER_PUBLIC_KEY} from "../constants/MateriaKeys";
 import Decimal from "decimal.js";
-
-export const equalMateria = (init: bigint, end: bigint, ton: bigint, price: Decimal) => {
-    const resMateria: Decimal = new Decimal(fromNano(ton)).div(price)
-    const diff = new Decimal("0.00001").mul(resMateria);
-    const minMateria = resMateria.minus(diff);
-    const maxMateria = resMateria.plus(diff);
-    const realMateria = new Decimal(fromNano(toNano(end) - toNano(init)));
-    const res = realMateria > minMateria && realMateria < maxMateria;
-    expect(res).toBeTruthy();
-}
+import {equalMateria} from "./materia.test";
 
 describe("Standart jetton test", () => {
     let wallet_code = new Cell();
@@ -48,15 +38,13 @@ describe("Standart jetton test", () => {
         notDeployer = await blockchain.treasury('notDeployer');
         content = jettonContentToCell({type: 1, uri: "https://testjetton.org/content.json"});
         pubkey = 0n;
-        txIds = jettonTxIdsToCell([])
         const admin = deployer.address
         materiaMinter = blockchain.openContract(MateriaMinter.createFromConfig({
             totalSuply,
             admin,
             pubkey,
             content,
-            wallet_code,
-            txIds
+            wallet_code
         }, minter_code));
         getUserWallet = async (address: Address) => blockchain.openContract(
             MateriaWallet.createFromAddress(
@@ -66,7 +54,7 @@ describe("Standart jetton test", () => {
     })
 
     it('should deploy and mint correct amount to owner', async () => {
-        const initTonAmount = toNano('100');
+        const initTonAmount = toNano('100000');
         // 💥 deploy contract with 100 TON
         const deployResult = await materiaMinter.sendDeploy(
             deployer.getSender(),
@@ -88,9 +76,10 @@ describe("Standart jetton test", () => {
         expect(await materiaMinter.getInitialSupplyCorrect(initTonAmount)).toBeTruthy();
         const price = await materiaMinter.getCurrentPriceDecimal();
         expect(price).toEqual(
-            new Decimal(balance.toString()).div(initialTotalSupply.toString()).toDecimalPlaces(9)
+            new Decimal(fromNano(balance)).div(initialTotalSupply.toString()).toDecimalPlaces(9)
         );
-        expect(await deployerMateriaWallet.getMateriaBalance()).toEqual(initTonAmount * INIT_MAT_FOR_TON)
+        const initialMateriaBalance = await deployerMateriaWallet.getMateriaBalance();
+        expect(initialMateriaBalance).toEqual(initTonAmount / 1_000_000_000n * INIT_MAT_FOR_TON)
     });
 
     it('any user can mint manteria for wallet', async () => {
@@ -99,9 +88,9 @@ describe("Standart jetton test", () => {
         const deployerStartBalance = await deployer.getBalance();
         const initialTotalSupply = await materiaMinter.getTotalSupply();
         const initalBalance: bigint = await materiaMinter.getBalance();
-        const initialDeployerData = await deployerMateriaWallet.getBalance();
-        const initialNotDeployerData = await notDeployerMateriaWallet.getBalance();
-        let tonAmountForBuyMateria = toNano("1000");
+        const initialDeployerData = await deployerMateriaWallet.getMateriaBalance();
+        const initialNotDeployerData = await notDeployerMateriaWallet.getMateriaBalance();
+        let tonAmountForBuyMateria = toNano("100000");
         const price = await materiaMinter.getCurrentPriceDecimal();
         const buyPrice = price.mul(new Decimal(PRICE_MULTIPLIER.toString())).div(100);
         const mintResult = await materiaMinter.sendMintMessage(notDeployer.getSender(), tonAmountForBuyMateria);
@@ -124,8 +113,8 @@ describe("Standart jetton test", () => {
 
         const endTotalSupply = await materiaMinter.getTotalSupply();
         const endBalance: bigint = await materiaMinter.getBalance();
-        const endDeployerData = await deployerMateriaWallet.getBalance();
-        const endNotDeployerData = await notDeployerMateriaWallet.getBalance();
+        const endDeployerData = await deployerMateriaWallet.getMateriaBalance();
+        const endNotDeployerData = await notDeployerMateriaWallet.getMateriaBalance();
         expect(await deployer.getBalance() - deployerStartBalance).toBeGreaterThan(tonAmountForBuyMateria * TAX_VALUE / 100n - toNano("0.001"));
         expect(endBalance - initalBalance).toBeGreaterThan(tonAmountForBuyMateria * (100n - TAX_VALUE) / 100n - toNano("0.05"));
         expect(initialDeployerData).toEqual(endDeployerData)
@@ -168,14 +157,14 @@ describe("Standart jetton test", () => {
         const notDeployerMaterialWallet = await getUserWallet(notDeployer.address);
         let initalMaterialBalance2 = await notDeployerMaterialWallet.getMateriaBalance();
         let sentAmount = toNano('0.5');
-        let forwardAmount = toNano('0.05');
+        let forwardAmount = toNano('0.01');
         const sendResult = await deployerMateriaWallet.sendTransfer(deployer.getSender(), toNano('0.1'), sentAmount, notDeployer.address, deployer.address, null, forwardAmount, null);
-        // expect(sendResult.transactions).toHaveTransaction(
-        //     {
-        //         from: notDeployerMaterialWallet.address,
-        //         to: deployer.address
-        //     }
-        // )
+        expect(sendResult.transactions).toHaveTransaction(
+            {
+                from: notDeployerMaterialWallet.address,
+                to: deployer.address
+            }
+        )
         expect(sendResult.transactions).toHaveTransaction({
             from: notDeployerMaterialWallet.address,
             to: notDeployer.address,
@@ -465,13 +454,14 @@ describe("Standart jetton test", () => {
     it('minter should only accept burn messages from jetton wallets', async () => {
         const deployerMateriaWallet = await getUserWallet(deployer.address);
         let burnAmount = toNano("1");
-        const burnNotification = (amount: bigint, addr: Address) => {
+        const burnNotification = (amount: bigint, addr: Address, tonAmount: bigint = 0n) => {
             return beginCell()
                 .storeUint(Op.burn_notification, 32)
                 .storeUint(0, 64)
                 .storeCoins(amount)
                 .storeAddress(addr)
                 .storeAddress(deployer.address)
+                .storeCoins(tonAmount)
                 .endCell();
         }
         let res = await blockchain.sendMessage(internal({
@@ -499,6 +489,19 @@ describe("Standart jetton test", () => {
             from: deployerMateriaWallet.address,
             to: materiaMinter.address,
             success: true
+        })
+
+        res = await blockchain.sendMessage(internal({
+            from: deployer.address,
+            to: materiaMinter.address,
+            body: burnNotification(burnAmount, deployer.address, toNano("100")),
+            value: toNano('0.1')
+        }))
+        expect(res.transactions).toHaveTransaction({
+            from: deployer.address,
+            to: materiaMinter.address,
+            success: false,
+            exitCode: Errors.invalid_sender
         })
     })
 
@@ -555,7 +558,6 @@ describe("Standart jetton test", () => {
         })
 
         discoveryResult = await materiaMinter.sendDiscoveryMessage(deployer.getSender(), notDeployer.address, false, minimalFee + 1n);
-
 
 
         expect(discoveryResult.transactions).toHaveTransaction({

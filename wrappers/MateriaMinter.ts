@@ -4,15 +4,17 @@ import {
     Cell,
     Contract,
     contractAddress,
-    ContractProvider,
+    ContractProvider, Dictionary,
     Sender,
     SendMode,
-    toNano, TupleBuilder
+    toNano, TupleBuilder, TupleItem
 } from 'ton-core';
 
 import {Op} from './MateriaConstants';
 import Decimal from "decimal.js";
 import {JettonWallet} from "ton";
+import retryTimes = jest.retryTimes;
+import Any = jasmine.Any;
 
 export const fwd_fee = 1804014n, gas_consumption = 15000000n, min_tons_for_storage = 10000000n;
 export const INIT_MAT_FOR_TON: bigint = 100_000n;
@@ -35,7 +37,6 @@ export type MateriaMinterConfig = {
     admin: Address;
     pubkey: bigint;
     content: Cell;
-    txIds: Cell;
     wallet_code: Cell;
 };
 
@@ -49,7 +50,7 @@ export function jettonMinterConfigToCell(config: MateriaMinterConfig): Cell {
         .storeUint(config.pubkey, 256)
         .storeRef(config.content)
         .storeRef(config.wallet_code)
-        .storeRef(config.txIds)
+        .storeDict()
         .endCell();
 }
 
@@ -61,29 +62,6 @@ export function jettonContentToCell(content: JettonMinterContent): Cell {
         .storeUint(content.type, 8)
         .storeStringTail(content.uri)     // UTF-8 string
         .endCell();
-}
-
-/**
- * Creates a linked list of transaction IDs with timestamps.
- * Used to track recent mints and prevent replay attacks.
- */
-export function jettonTxIdsToCell(txIds: { tx_id: number; timestamp: number }[]): Cell {
-    let current: Cell | null = null;
-
-    for (let i = txIds.length - 1; i >= 0; i--) {
-        const item = txIds[i];
-        const cell = beginCell()
-            .storeUint(item.tx_id, 64)
-            .storeUint(item.timestamp, 64);
-
-        if (current) {
-            cell.storeRef(current);
-        }
-
-        current = cell.endCell();
-    }
-
-    return current ?? beginCell().endCell();
 }
 
 /**
@@ -153,7 +131,6 @@ export class MateriaMinter implements Contract {
             .storeUint(queryId, 64)
             .storeCoins(initTonAmount)
             .storeUint(serverPubkey, 256)
-            .storeAddress(this.address)
             .endCell();
         await provider.internal(via, {
             value: initTonAmount,
@@ -219,16 +196,12 @@ export class MateriaMinter implements Contract {
         timestamp: bigint,
         query_id: number | bigint = 0n
     ): Cell {
-        const signatureCell = beginCell()
-            .storeBuffer(signature)
-            .endCell();
-
         return beginCell()
             .storeUint(Op.receive_experience, 32)
             .storeUint(query_id, 64)
-            .storeRef(signatureCell)
             .storeUint(xp, 64)
             .storeUint(timestamp, 64)
+            .storeBuffer(signature, 64)
             .endCell();
     }
 
@@ -249,7 +222,7 @@ export class MateriaMinter implements Contract {
         signature: Buffer,
         xp: bigint,
         timestamp: bigint,
-        value: bigint
+        value: bigint = toNano("0.5")
     ): Promise<void> {
         const body = MateriaMinter.receiveExperienceMessage(signature, xp, timestamp);
 
@@ -261,13 +234,11 @@ export class MateriaMinter implements Contract {
     }
 
     static mintMessage(
-        from: Address,
         query_id: number | bigint = 0,
     ): Cell {
         return beginCell()
             .storeUint(Op.mint, 32)
             .storeUint(query_id, 64)
-            .storeAddress(from)
             .endCell();
     }
 
@@ -285,7 +256,7 @@ export class MateriaMinter implements Contract {
     ): Promise<void> {
         await provider.internal(via, {
             sendMode: SendMode.PAY_GAS_SEPARATELY,
-            body: MateriaMinter.mintMessage(this.address),
+            body: MateriaMinter.mintMessage(),
             value: ton_amount
         });
     }
@@ -400,17 +371,14 @@ export class MateriaMinter implements Contract {
         timestamp: number | bigint,
         query_id: number | bigint = 0n
     ): Cell {
-        const signatureCell = beginCell()
-            .storeBuffer(signature)
-            .endCell();
 
         return beginCell()
             .storeUint(Op.mint_from_game, 32)     // op = 0x02
             .storeUint(query_id, 64)              // optional query_id
-            .storeRef(signatureCell)              // ref to signature
             .storeCoins(amount)                   // amount of MAT to mint
             .storeUint(tx_id, 64)                 // unique tx_id
             .storeUint(timestamp, 64)             // timestamp (for expiration check)
+            .storeBuffer(signature, 64)              // ref to signature
             .endCell();
     }
 
@@ -634,6 +602,26 @@ export class MateriaMinter implements Contract {
         };
     }
 
+
+    async getDictLen(provider: ContractProvider): Promise<number> {
+        const res = await provider.get("get_dict_len", []);
+        return res.stack.readNumber();
+    }
+
+    async getDictKeys(provider: ContractProvider): Promise<Array<bigint>> {
+        const res = await provider.get("get_dict_keys", []);
+        const keysTuple = res.stack.readTuple();
+        const keys: bigint[] = [];
+        while (true) {
+            try {
+                keys.push(keysTuple.readBigNumber());
+            } catch (e) {
+                break;
+            }
+        }
+        return keys;
+    }
+
     /**
      * Returns the current total supply of the Jetton in smallest units (e.g., nanoMAT).
      *
@@ -681,7 +669,7 @@ export class MateriaMinter implements Contract {
         const res = await provider.get('get_price_9', args.build());
         const rawPrice: bigint = res.stack.readBigNumber();
 
-        return new Decimal('1e9').div(rawPrice.toString()).toDecimalPlaces(9);
+        return new Decimal('1').div(rawPrice.toString()).toDecimalPlaces(9);
     }
 
     /**
@@ -695,7 +683,7 @@ export class MateriaMinter implements Contract {
         provider: ContractProvider,
         tonAmount: bigint
     ): Promise<boolean> {
-        const expectedSupply = tonAmount * INIT_MAT_FOR_TON;
+        const expectedSupply = tonAmount * INIT_MAT_FOR_TON / 1_000_000_000n;
         const actualSupply = await this.getTotalSupply(provider);
         return actualSupply == expectedSupply;
     }

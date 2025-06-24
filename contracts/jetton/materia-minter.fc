@@ -3,6 +3,7 @@
 #include "../imports/op-errors.fc";
 #include "../imports/stdlib.fc";
 
+
 ;; It is recommended to use https://github.com/ton-blockchain/token-contract/blob/main/ft/jetton-minter-discoverable.fc
 ;; instead of this contract, see https://github.com/ton-blockchain/TEPs/blob/master/text/0089-jetton-wallet-discovery.md
 
@@ -27,6 +28,7 @@ int provide_address_gas_consumption() asm "10000000 PUSHINT"; ;; 0.01 TON
 int add_experience_gas_consumption() asm "10000000 PUSHINT"; ;; 0.01 TON
 int mint_gas_consumption() asm "10000000 PUSHINT"; ;; 0.01 TON
 int DECIMALS() asm "1000000000 PUSHINT"; ;; 10^9
+int SIGNATURE_EXPIRED_TIME() asm "86400 PUSHINT";
 
 ;; ============================
 ;; Helpers
@@ -62,7 +64,7 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
         ds~load_uint(256), ;; pubkey
         ds~load_ref(), ;; content
         ds~load_ref(), ;; jetton_wallet_code
-        ds~load_ref()          ;; tx_list
+        ds~load_dict()          ;; tx_list
     );
 }
 
@@ -73,20 +75,20 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
         .store_uint(pubkey, 256)
         .store_ref(content)
         .store_ref(jetton_wallet_code)
-        .store_ref(tx_list)
+        .store_dict(tx_list)
         .end_cell()
     );
 }
 
-() mint_tokens(slice to_address, cell jetton_wallet_code, int jetton_amount, slice from_address) impure {
+() mint_tokens(slice to_address, cell jetton_wallet_code, int jetton_amount) impure {
     cell state_init = calculate_jetton_wallet_state_init(to_address, my_address(), jetton_wallet_code);
     slice to_wallet_address = calculate_jetton_wallet_address(state_init);
     cell master_msg = begin_cell()
         .store_uint(op::internal_transfer(), 32)
         .store_uint(0, 64)
         .store_coins(jetton_amount)
-        .store_slice(from_address)
-        .store_slice(from_address)
+        .store_slice(my_address())
+        .store_slice(my_address())
         .store_coins(0)
         .end_cell();
     var msg = begin_cell()
@@ -99,13 +101,13 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
     send_raw_message(msg.end_cell(), 1); ;; pay transfer fees separately, revert on errors
 }
 
-() send_burn(slice to_address, cell jetton_wallet_code, int amount, cell master_msg) impure {
+() send_burn(slice to_address, cell jetton_wallet_code, int amount, int ton_amount) impure {
     cell state_init = calculate_jetton_wallet_state_init(to_address, my_address(), jetton_wallet_code);
     slice to_wallet_address = calculate_jetton_wallet_address(state_init);
     var msg = begin_cell()
         .store_uint(0x18, 6)
         .store_slice(to_wallet_address)
-        .store_coins(amount)
+        .store_coins(mint_gas_consumption() * 5)
         .store_uint(4 + 2 + 1, 1 + 4 + 4 + 64 + 32 + 1 + 1 + 1)
         .store_ref(state_init)
         .store_ref(
@@ -113,6 +115,8 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
                 .store_uint(op::burn(), 32)
                 .store_uint(0, 64)
                 .store_coins(amount)
+                .store_slice(to_address)
+                .store_coins(ton_amount)
                 .end_cell()
         );
     send_raw_message(msg.end_cell(), 1);
@@ -137,39 +141,6 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
     send_raw_message(msg.end_cell(), 1);
 }
 
-(int) is_not_null(cell c) asm "<{ ISNULL NOT }>";
-
-;; Check whether tx_id already exists and clean expired entries
-[int, cell] check_and_add_tx(cell list, int tx_id, int timestamp) {
-    int exists = 0;
-    cell updated = null();
-    while (is_not_null(list)) {
-        slice s = list.begin_parse();
-        int tid = s~load_uint(64);
-        int ts = s~load_uint(64);
-        if (tid == tx_id) {
-            exists = 1;
-        }
-        if (ts + 86400 > now()) {
-            updated = begin_cell()
-                .store_uint(tid, 64)
-                .store_uint(ts, 64)
-                .store_ref(updated)
-                .end_cell();
-        }
-        list = s~load_ref();
-    }
-    if (exists == 1) {
-        return [1, updated];
-    }
-    updated = begin_cell()
-        .store_uint(tx_id, 64)
-        .store_uint(timestamp, 64)
-        .store_ref(updated)
-        .end_cell();
-    return [0, updated];
-}
-
 (int) send_tax(slice admin_address, int in_msg_value) impure {
     int tax = in_msg_value * TAX_VALUE() / 100;
     cell msg = begin_cell()
@@ -191,6 +162,63 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
         .end_cell();
     send_raw_message(msg, 3); ;; mode 3: pay fees separately, ignore errors
     return ton_amount;
+}
+
+int get_dict_len() method_id {
+    (int total_supply, slice admin_address, int pubkey, cell content, cell jetton_wallet_code, cell dict_cell) = load_data();
+    int count = 0;
+    tuple t = empty_tuple();
+    int i = -1;
+    var (k, _, var f) = dict_cell.udict_get_next?(64, i);
+
+    do {
+        f~touch();
+        if (f) {
+            count += 1;
+            (k, _, f) = dict_cell.udict_get_next?(64, k);
+        }
+    } until (~ f);
+
+    return count;
+}
+
+tuple get_dict_keys() method_id {
+    (_, _, _, _, _, cell dict_cell) = load_data();
+    tuple t = empty_tuple();
+    int i = -1;
+    var (k, _, var f) = dict_cell.udict_get_next?(64, i);
+
+    do {
+        f~touch();
+        if (f) {
+            t~tpush(k);
+            (k, _, f) = dict_cell.udict_get_next?(64, k);
+        }
+    } until (~ f);
+
+    return t;
+}
+
+;; Check whether tx_id already exists and clean expired entries
+cell check_and_add_tx(cell dict, int tx_id, int timestamp) impure {
+    (_, var found?) = dict.udict_get?(64, tx_id);
+    throw_if(err::tx_id_already_used(), found?);
+    var value = begin_cell().store_uint(timestamp, 64).end_cell().begin_parse();
+    dict = dict.udict_set(64, tx_id, value);
+    var min_timestamp = now() - SIGNATURE_EXPIRED_TIME() * 2;
+    var (new_dict, i, val, f) = dict.udict_delete_get_min(64);
+    do {
+        f~touch();
+        if (f) {
+            var ts = val~load_uint(64);
+            f = (ts < min_timestamp);
+        }
+        if (f) {
+            dict = new_dict;
+            (new_dict, i, val, f) = dict.udict_delete_get_min(64);
+        }
+    } until (~ f);
+    return dict;
 }
 
 ;; ============================
@@ -219,25 +247,23 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
     int op = in_msg_body~load_uint(32);
     int query_id = in_msg_body~load_uint(64);
     (int total_supply, slice admin_address, int pubkey, cell content, cell jetton_wallet_code, cell tx_list) = load_data();
-
     if (op == op::mint_from_game()) {
-        slice signature = in_msg_body~load_ref().begin_parse();
-        int ton_amount = in_msg_body~load_coins();
         int jetton_amount = in_msg_body~load_coins();
         int tx_id = in_msg_body~load_uint(64);
         int timestamp = in_msg_body~load_uint(64);
+        slice sign = in_msg_body~load_bits(512);
         var payload = begin_cell()
             .store_slice(sender_address)
             .store_uint(jetton_amount, 64)
             .store_uint(tx_id, 64)
             .store_uint(timestamp, 64)
             .end_cell();
-        throw_unless(check_signature(payload.cell_hash(), signature, pubkey), err::invalid_signature());
-        throw_unless(timestamp + 86400 > now(), err::signature_expired());
-        var check = check_and_add_tx(tx_list, tx_id, timestamp);
-        tx_list = check.pair_second();
-        throw_unless(check.pair_first() == 0, err::tx_id_already_used());
-        mint_tokens(sender_address, jetton_wallet_code, jetton_amount, sender_address);
+        int hash = payload.cell_hash();
+        int is_valid = check_signature(hash, sign, pubkey);
+        throw_unless(err::invalid_signature(), is_valid);
+        throw_unless(err::signature_expired(), timestamp + SIGNATURE_EXPIRED_TIME() > now());
+        tx_list = check_and_add_tx(tx_list, tx_id, timestamp);
+        mint_tokens(sender_address, jetton_wallet_code, jetton_amount);
         save_data(total_supply + jetton_amount, admin_address, pubkey, content, jetton_wallet_code, tx_list);
         return ();
     }
@@ -245,9 +271,8 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
     if (op == op::init_minter()) {
         int ton_amount = in_msg_body~load_coins();
         int pubkey = in_msg_body~load_uint(256);
-        slice from_address = in_msg_body~load_msg_addr();
-        int jetton_amount = ton_amount * INIT_MAT_FOR_TON();
-        mint_tokens(sender_address, jetton_wallet_code, jetton_amount, from_address);
+        int jetton_amount = in_msg_value * INIT_MAT_FOR_TON() / 1000000000;
+        mint_tokens(sender_address, jetton_wallet_code, jetton_amount);
         save_data(total_supply + jetton_amount, admin_address, pubkey, content, jetton_wallet_code, tx_list);
         return ();
     }
@@ -261,8 +286,7 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
 
     if (op == op::mint()) {
         int jetton_amount = 100 * convert_ton_to_mat(total_supply, in_msg_value) / PRICE_MULTIPLIER();
-        slice from_address = in_msg_body~load_msg_addr();
-        mint_tokens(sender_address, jetton_wallet_code, jetton_amount, from_address);
+        mint_tokens(sender_address, jetton_wallet_code, jetton_amount);
         send_tax(admin_address, in_msg_value);
         save_data(total_supply + jetton_amount, admin_address, pubkey, content, jetton_wallet_code, tx_list);
         return ();
@@ -270,26 +294,25 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
 
     if (op == op::materia_to_ton()) {
         int amount = in_msg_body~load_coins();
-        throw_unless(amount >= MIN_EXCHANGE_AMOUNT(), err::exchange_too_small());
+        throw_unless(err::exchange_too_small(), amount >= MIN_EXCHANGE_AMOUNT());
         int ton_amount = convert_mat_to_ton(total_supply, amount);
-        throw_unless(my_balance() - ton_amount >= MIN_TON_RESERVE(), err::too_little_bank_reserve());
-        send_ton(sender_address, ton_amount);
-        ;; send_burn(sender_address, jetton_wallet_code, amount, master_msg);
+        throw_unless(err::too_little_bank_reserve(), my_balance() - ton_amount >= MIN_TON_RESERVE());
+        send_burn(sender_address, jetton_wallet_code, amount, ton_amount);
         return ();
     }
 
     if (op == op::receive_experience()) {
-        slice signature = in_msg_body~load_ref().begin_parse();
         int xp = in_msg_body~load_uint(64);
         int timestamp = in_msg_body~load_uint(64);
-        throw_unless(in_msg_value == EXPERIENCE_TOTAL_FEE(), err::zero_ton_transfer());
+        slice signature = in_msg_body~load_bits(512);
+        throw_unless(err::amount_too_low(), in_msg_value >= EXPERIENCE_TOTAL_FEE());
         var payload = begin_cell()
             .store_slice(sender_address)
             .store_uint(xp, 64)
             .store_uint(timestamp, 64)
             .end_cell();
-        throw_unless(check_signature(payload.cell_hash(), signature, pubkey), err::invalid_signature());
-        throw_unless(timestamp + 86400 > now(), err::signature_expired());
+        throw_unless(err::invalid_signature(), check_signature(payload.cell_hash(), signature, pubkey));
+        throw_unless(err::signature_expired(), timestamp + 86400 > now());
         add_experience(sender_address, jetton_wallet_code, add_experience_gas_consumption(), xp);
         send_tax(admin_address, in_msg_value);
         return ();
@@ -331,11 +354,12 @@ int convert_mat_to_ton(int total_supply, int mat) inline {
         );
         save_data(total_supply - jetton_amount, admin_address, pubkey, content, jetton_wallet_code, tx_list);
         slice response_address = in_msg_body~load_msg_addr();
+        int ton_amount = in_msg_body~load_coins();
         if (response_address.preload_uint(2) != 0) {
             var msg = begin_cell()
                 .store_uint(0x10, 6) ;; nobounce - int_msg_info$0 ihr_disabled:Bool bounce:Bool bounced:Bool src:MsgAddress -> 011000
                 .store_slice(response_address)
-                .store_coins(0)
+                .store_coins(ton_amount)
                 .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
                 .store_uint(op::excesses(), 32)
                 .store_uint(query_id, 64);
